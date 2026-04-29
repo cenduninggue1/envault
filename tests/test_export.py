@@ -78,3 +78,17 @@ def test_export_empty_variables():
     for fmt in SUPPORTED_FORMATS:
         result = export_variables({}, fmt)
         assert isinstance(result, str)
+
+
+def test_export_dotenv_each_var_on_own_line():
+    """Ensure each variable occupies exactly one line in dotenv output."""
+    result = export_dotenv(SAMPLE_VARS)
+    lines = [line for line in result.splitlines() if line.strip()]
+    assert len(lines) == len(SAMPLE_VARS)
+
+
+def test_export_shell_each_var_on_own_line():
+    """Ensure each variable produces exactly one export line in shell output."""
+    result = export_shell(SAMPLE_VARS)
+    export_lines = [line for line in result.splitlines() if line.startswith("export ")]
+    assert len(export_lines) == len(SAMPLE_VARS)
