@@ -51,6 +51,14 @@ def test_rotate_key_empty_new_password_raises(vault_dir: Path) -> None:
         rotate_key(vault_dir, "old-pass", "", audit=False)
 
 
+def test_rotate_key_data_unchanged_after_rotation(vault_dir: Path) -> None:
+    """Verify that rotation preserves all secret values exactly."""
+    original = load_vault(vault_dir, "old-pass")
+    rotate_key(vault_dir, "old-pass", "new-pass", audit=False)
+    rotated = load_vault(vault_dir, "new-pass")
+    assert original == rotated
+
+
 # --- CLI tests ------------------------------------------------------------
 
 @pytest.fixture()
@@ -76,3 +84,14 @@ def test_cli_rotate_key_wrong_password(runner: CliRunner, vault_dir: Path) -> No
     )
     assert result.exit_code != 0
     assert "Error" in result.output
+
+
+def test_cli_rotate_key_reports_variable_count(runner: CliRunner, vault_dir: Path) -> None:
+    """Verify the CLI output mentions the number of re-encrypted variables."""
+    result = runner.invoke(
+        rotate_group,
+        ["key", "--old-password", "old-pass", "--new-password", "new-pass"],
+        obj={"vault_dir": str(vault_dir)},
+    )
+    assert result.exit_code == 0
+    assert "2" in result.output
