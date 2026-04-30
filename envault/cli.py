@@ -1,113 +1,138 @@
-"""CLI entry point for envault."""
+"""Main CLI entry-point for envault."""
+
+from __future__ import annotations
 
 import click
 
+from envault.audit import record_event
+from envault.cli_audit import audit_group
+from envault.cli_rotate import rotate_group
+from envault.cli_search import search_group
+from envault.cli_share import share_group
+from envault.cli_snapshot import snapshot_group
+from envault.cli_tag import tag_group
+from envault.cli_template import template_group
+from envault.export import export_variables
+from envault.import_env import import_variables
 from envault.vault import init_vault, load_vault, save_vault
-from envault.export import export_variables, SUPPORTED_FORMATS as EXPORT_FORMATS
-from envault.import_env import import_from_file, ImportError as EnvImportError
-
-DEFAULT_VAULT = ".envault"
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """envault — secure environment variable manager."""
 
 
+# ---------------------------------------------------------------------------
+# Sub-command groups
+# ---------------------------------------------------------------------------
+cli.add_command(audit_group)
+cli.add_command(rotate_group)
+cli.add_command(search_group)
+cli.add_command(share_group)
+cli.add_command(snapshot_group)
+cli.add_command(tag_group)
+cli.add_command(template_group)
+
+
+# ---------------------------------------------------------------------------
+# Core commands
+# ---------------------------------------------------------------------------
+
 @cli.command()
-@click.option("--vault", default=DEFAULT_VAULT, help="Path to vault file.")
-@click.password_option(prompt="Master password")
-def init(vault, password):
-    """Initialize a new vault."""
+@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.option("--vault-dir", default=None, hidden=True)
+def init(password: str, vault_dir: str | None) -> None:
+    """Initialise a new vault in the current directory."""
+    from pathlib import Path
+    vdir = Path(vault_dir) if vault_dir else Path.cwd()
     try:
-        init_vault(vault, password)
-        click.echo(f"Vault initialized at {vault}")
-    except FileExistsError:
-        click.echo(f"Error: Vault already exists at {vault}", err=True)
-        raise SystemExit(1)
+        init_vault(vdir, password)
+    except FileExistsError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("Vault initialised.")
 
 
-@cli.command(name="set")
+@cli.command("set")
 @click.argument("key")
 @click.argument("value")
-@click.option("--vault", default=DEFAULT_VAULT, help="Path to vault file.")
-@click.password_option(prompt="Master password")
-def set_var(key, value, vault, password):
-    """Set an environment variable in the vault."""
-    data = load_vault(vault, password)
-    data[key] = value
-    save_vault(vault, password, data)
-    click.echo(f"Set {key}")
-
-
-@cli.command(name="get")
-@click.argument("key")
-@click.option("--vault", default=DEFAULT_VAULT, help="Path to vault file.")
-@click.password_option(prompt="Master password")
-def get_var(key, vault, password):
-    """Get an environment variable from the vault."""
-    data = load_vault(vault, password)
-    if key not in data:
-        click.echo(f"Key not found: {key}", err=True)
-        raise SystemExit(1)
-    click.echo(data[key])
-
-
-@cli.command(name="list")
-@click.option("--vault", default=DEFAULT_VAULT, help="Path to vault file.")
-@click.password_option(prompt="Master password")
-def list_vars(vault, password):
-    """List all variable names in the vault."""
-    data = load_vault(vault, password)
-    if not data:
-        click.echo("No variables stored.")
-    for key in sorted(data):
-        click.echo(key)
-
-
-@cli.command(name="export")
-@click.option("--vault", default=DEFAULT_VAULT, help="Path to vault file.")
-@click.option(
-    "--format", "fmt", default="dotenv",
-    type=click.Choice(list(EXPORT_FORMATS)), show_default=True,
-    help="Output format.",
-)
-@click.password_option(prompt="Master password")
-def export_vars(vault, fmt, password):
-    """Export vault variables in the chosen format."""
-    data = load_vault(vault, password)
-    click.echo(export_variables(data, fmt))
-
-
-@cli.command(name="import")
-@click.argument("filepath")
-@click.option("--vault", default=DEFAULT_VAULT, help="Path to vault file.")
-@click.option(
-    "--format", "fmt", default=None,
-    type=click.Choice(["dotenv", "json", "shell"]),
-    help="Source file format (auto-detected from extension if omitted).",
-)
-@click.option("--overwrite", is_flag=True, default=False, help="Overwrite existing keys.")
-@click.password_option(prompt="Master password")
-def import_vars(filepath, vault, fmt, overwrite, password):
-    """Import environment variables from a file into the vault."""
+@click.option("--password", prompt=True, hide_input=True)
+@click.option("--vault-dir", default=None, hidden=True)
+def set_var(key: str, value: str, password: str, vault_dir: str | None) -> None:
+    """Set a variable in the vault."""
+    from pathlib import Path
+    vdir = Path(vault_dir) if vault_dir else Path.cwd()
     try:
-        incoming = import_from_file(filepath, fmt=fmt)
-    except EnvImportError as exc:
-        click.echo(f"Import error: {exc}", err=True)
-        raise SystemExit(1)
+        variables = load_vault(vdir, password)
+        variables[key] = value
+        save_vault(vdir, password, variables)
+        record_event(vdir, "set", {"key": key})
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Set {key}.")
 
-    data = load_vault(vault, password)
-    skipped = []
-    for key, value in incoming.items():
-        if key in data and not overwrite:
-            skipped.append(key)
-            continue
-        data[key] = value
 
-    save_vault(vault, password, data)
-    imported = set(incoming) - set(skipped)
-    click.echo(f"Imported {len(imported)} variable(s).")
-    if skipped:
-        click.echo(f"Skipped {len(skipped)} existing key(s): {', '.join(skipped)}")
-        click.echo("Use --overwrite to replace existing keys.")
+@cli.command("get")
+@click.argument("key")
+@click.option("--password", prompt=True, hide_input=True)
+@click.option("--vault-dir", default=None, hidden=True)
+def get_var(key: str, password: str, vault_dir: str | None) -> None:
+    """Get a variable from the vault."""
+    from pathlib import Path
+    vdir = Path(vault_dir) if vault_dir else Path.cwd()
+    try:
+        variables = load_vault(vdir, password)
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+    if key not in variables:
+        raise click.ClickException(f"Variable '{key}' not found.")
+    click.echo(variables[key])
+
+
+@cli.command("list")
+@click.option("--password", prompt=True, hide_input=True)
+@click.option("--vault-dir", default=None, hidden=True)
+def list_vars(password: str, vault_dir: str | None) -> None:
+    """List all variable names in the vault."""
+    from pathlib import Path
+    vdir = Path(vault_dir) if vault_dir else Path.cwd()
+    try:
+        variables = load_vault(vdir, password)
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+    if not variables:
+        click.echo("No variables stored.")
+        return
+    for k in sorted(variables):
+        click.echo(k)
+
+
+@cli.command("export")
+@click.option("--password", prompt=True, hide_input=True)
+@click.option("--format", "fmt", default="dotenv", show_default=True)
+@click.option("--vault-dir", default=None, hidden=True)
+def export_cmd(password: str, fmt: str, vault_dir: str | None) -> None:
+    """Export vault variables in the chosen format."""
+    from pathlib import Path
+    vdir = Path(vault_dir) if vault_dir else Path.cwd()
+    try:
+        variables = load_vault(vdir, password)
+        output = export_variables(variables, fmt)
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+    click.echo(output)
+
+
+@cli.command("import")
+@click.argument("import_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--password", prompt=True, hide_input=True)
+@click.option("--format", "fmt", default="dotenv", show_default=True)
+@click.option("--vault-dir", default=None, hidden=True)
+def import_cmd(import_file: str, password: str, fmt: str, vault_dir: str | None) -> None:
+    """Import variables from a file into the vault."""
+    from pathlib import Path
+    vdir = Path(vault_dir) if vault_dir else Path.cwd()
+    try:
+        count = import_variables(vdir, password, import_file, fmt)
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Imported {count} variable(s).")
