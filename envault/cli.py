@@ -1,138 +1,123 @@
-"""Main CLI entry-point for envault."""
+"""Main CLI entry-point for envault.
+
+This file re-registers all sub-groups so that `envault --help` surfaces
+every feature.  Only the group registration block at the bottom changes
+when new sub-groups are added.
+"""
 
 from __future__ import annotations
 
 import click
 
-from envault.audit import record_event
+from envault.vault import init_vault, load_vault, save_vault
 from envault.cli_audit import audit_group
 from envault.cli_rotate import rotate_group
-from envault.cli_search import search_group
-from envault.cli_share import share_group
 from envault.cli_snapshot import snapshot_group
+from envault.cli_share import share_group
+from envault.cli_search import search_group
 from envault.cli_tag import tag_group
 from envault.cli_template import template_group
-from envault.export import export_variables
-from envault.import_env import import_variables
-from envault.vault import init_vault, load_vault, save_vault
+from envault.cli_ttl import ttl_group
 
 
 @click.group()
-def cli() -> None:
+@click.option(
+    "--vault-dir",
+    default=".",
+    show_default=True,
+    help="Directory that contains the vault file.",
+)
+@click.pass_context
+def cli(ctx: click.Context, vault_dir: str) -> None:
     """envault — secure environment variable manager."""
+    ctx.ensure_object(dict)
+    ctx.obj["vault_dir"] = vault_dir
 
 
 # ---------------------------------------------------------------------------
-# Sub-command groups
-# ---------------------------------------------------------------------------
-cli.add_command(audit_group)
-cli.add_command(rotate_group)
-cli.add_command(search_group)
-cli.add_command(share_group)
-cli.add_command(snapshot_group)
-cli.add_command(tag_group)
-cli.add_command(template_group)
-
-
-# ---------------------------------------------------------------------------
-# Core commands
+# Inline commands
 # ---------------------------------------------------------------------------
 
 @cli.command()
-@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
-@click.option("--vault-dir", default=None, hidden=True)
-def init(password: str, vault_dir: str | None) -> None:
-    """Initialise a new vault in the current directory."""
-    from pathlib import Path
-    vdir = Path(vault_dir) if vault_dir else Path.cwd()
+@click.option("--password", "-p", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.pass_context
+def init(ctx: click.Context, password: str) -> None:
+    """Initialise a new vault in VAULT_DIR."""
+    vault_dir = ctx.obj["vault_dir"]
     try:
-        init_vault(vdir, password)
+        init_vault(vault_dir, password)
+        click.echo(f"Vault initialised in '{vault_dir}'.")
     except FileExistsError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo("Vault initialised.")
 
 
 @cli.command("set")
 @click.argument("key")
 @click.argument("value")
-@click.option("--password", prompt=True, hide_input=True)
-@click.option("--vault-dir", default=None, hidden=True)
-def set_var(key: str, value: str, password: str, vault_dir: str | None) -> None:
-    """Set a variable in the vault."""
-    from pathlib import Path
-    vdir = Path(vault_dir) if vault_dir else Path.cwd()
-    try:
-        variables = load_vault(vdir, password)
-        variables[key] = value
-        save_vault(vdir, password, variables)
-        record_event(vdir, "set", {"key": key})
-    except Exception as exc:  # noqa: BLE001
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"Set {key}.")
+@click.option("--password", "-p", prompt=True, hide_input=True)
+@click.pass_context
+def set_var(ctx: click.Context, key: str, value: str, password: str) -> None:
+    """Store KEY=VALUE in the vault."""
+    vault_dir = ctx.obj["vault_dir"]
+    data = load_vault(vault_dir, password)
+    data.setdefault("vars", {})[key] = value
+    save_vault(vault_dir, password, data)
+    click.echo(f"Set '{key}'.")
 
 
 @cli.command("get")
 @click.argument("key")
-@click.option("--password", prompt=True, hide_input=True)
-@click.option("--vault-dir", default=None, hidden=True)
-def get_var(key: str, password: str, vault_dir: str | None) -> None:
-    """Get a variable from the vault."""
-    from pathlib import Path
-    vdir = Path(vault_dir) if vault_dir else Path.cwd()
-    try:
-        variables = load_vault(vdir, password)
-    except Exception as exc:  # noqa: BLE001
-        raise click.ClickException(str(exc)) from exc
-    if key not in variables:
-        raise click.ClickException(f"Variable '{key}' not found.")
-    click.echo(variables[key])
+@click.option("--password", "-p", prompt=True, hide_input=True)
+@click.pass_context
+def get_var(ctx: click.Context, key: str, password: str) -> None:
+    """Print the value of KEY."""
+    vault_dir = ctx.obj["vault_dir"]
+    data = load_vault(vault_dir, password)
+    value = data.get("vars", {}).get(key)
+    if value is None:
+        raise click.ClickException(f"Key '{key}' not found.")
+    click.echo(value)
 
 
 @cli.command("list")
-@click.option("--password", prompt=True, hide_input=True)
-@click.option("--vault-dir", default=None, hidden=True)
-def list_vars(password: str, vault_dir: str | None) -> None:
-    """List all variable names in the vault."""
-    from pathlib import Path
-    vdir = Path(vault_dir) if vault_dir else Path.cwd()
-    try:
-        variables = load_vault(vdir, password)
-    except Exception as exc:  # noqa: BLE001
-        raise click.ClickException(str(exc)) from exc
+@click.option("--password", "-p", prompt=True, hide_input=True)
+@click.pass_context
+def list_vars(ctx: click.Context, password: str) -> None:
+    """List all variable keys stored in the vault."""
+    vault_dir = ctx.obj["vault_dir"]
+    data = load_vault(vault_dir, password)
+    variables = data.get("vars", {})
     if not variables:
         click.echo("No variables stored.")
         return
-    for k in sorted(variables):
-        click.echo(k)
+    for key in sorted(variables):
+        click.echo(f"  {key}")
 
 
-@cli.command("export")
-@click.option("--password", prompt=True, hide_input=True)
-@click.option("--format", "fmt", default="dotenv", show_default=True)
-@click.option("--vault-dir", default=None, hidden=True)
-def export_cmd(password: str, fmt: str, vault_dir: str | None) -> None:
-    """Export vault variables in the chosen format."""
-    from pathlib import Path
-    vdir = Path(vault_dir) if vault_dir else Path.cwd()
-    try:
-        variables = load_vault(vdir, password)
-        output = export_variables(variables, fmt)
-    except Exception as exc:  # noqa: BLE001
-        raise click.ClickException(str(exc)) from exc
-    click.echo(output)
+@cli.command("delete")
+@click.argument("key")
+@click.option("--password", "-p", prompt=True, hide_input=True)
+@click.pass_context
+def delete_var(ctx: click.Context, key: str, password: str) -> None:
+    """Remove KEY from the vault."""
+    vault_dir = ctx.obj["vault_dir"]
+    data = load_vault(vault_dir, password)
+    if key not in data.get("vars", {}):
+        raise click.ClickException(f"Key '{key}' not found.")
+    del data["vars"][key]
+    save_vault(vault_dir, password, data)
+    click.echo(f"Deleted '{key}'.")
 
 
-@cli.command("import")
-@click.argument("import_file", type=click.Path(exists=True, dir_okay=False))
-@click.option("--password", prompt=True, hide_input=True)
-@click.option("--format", "fmt", default="dotenv", show_default=True)
-@click.option("--vault-dir", default=None, hidden=True)
-def import_cmd(import_file: str, password: str, fmt: str, vault_dir: str | None) -> None:
-    """Import variables from a file into the vault."""
-    from pathlib import Path
-    vdir = Path(vault_dir) if vault_dir else Path.cwd()
-    try:
-        count = import_variables(vdir, password, import_file, fmt)
-    except Exception as exc:  # noqa: BLE001
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"Imported {count} variable(s).")
+# ---------------------------------------------------------------------------
+# Sub-group registration
+# ---------------------------------------------------------------------------
+
+cli.add_command(audit_group)
+cli.add_command(rotate_group)
+cli.add_command(snapshot_group)
+cli.add_command(share_group)
+cli.add_command(search_group)
+cli.add_command(tag_group)
+cli.add_command(template_group)
+cli.add_command(ttl_group)
